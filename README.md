@@ -35,23 +35,44 @@ Three pieces:
 - **`cli/fivem-admin`** — a bash CLI on the server host that wraps the API
   (it reads the token locally; the token never leaves the host).
 - **`mcp/ducktown-mcp`** — a dependency-free Python MCP server (stdio) that
-  exposes 15 tools: `ducktown_sense`, `ducktown_companion`, `ducktown_players`,
-  `ducktown_status`, `ducktown_say`, `ducktown_spawn_vehicle`, `ducktown_heal`,
-  `ducktown_revive`, `ducktown_teleport`, `ducktown_give_item`,
-  `ducktown_give_money`, `ducktown_give_weapon`, `ducktown_arm_player`,
-  `ducktown_companion_deploy`, `ducktown_kit`.
+  exposes 23 tools: the **complete `fivem-admin` surface** — every CLI verb
+  has a tool — plus three choreographed composites on top. Full table below.
 
 The agent loop is the classic one: **sense → decide → act.** `ducktown_sense`
 is the agent's eyes; `ducktown_companion` is its body — spawn beside a player,
 follow them, guard them (armed), ride in their vehicle, talk in chat, emote.
 
 Three of the tools are **harness composites** — one call that runs a whole
-choreographed sequence and reads the result back:
+choreographed sequence and reads the result back. They are parameterized,
+never hard-stuck to one gun, one kit, or one car:
 
-- `ducktown_arm_player` — carbine + pistol for a player, via the inventory.
+- `ducktown_arm_player` — arm a player via the inventory. Optional `weapons`
+  array picks the loadout (inventory weapon item ids — on the reference BS19
+  install: `carbine`, `pistol`, `assault_rifle`, `smg`, `pump_shotgun`,
+  `revolver`, `combat_pistol`, `sawn_off`, `marksman`, `hunting_rifle`);
+  defaults to `carbine` + `pistol`.
 - `ducktown_companion_deploy` — companion spawn → guard → sense readback.
-- `ducktown_kit` — the full respawn kit: vehicle, companion warped into the
-  passenger seat, player armed, final sense report to verify it all.
+- `ducktown_kit` — the respawn kit. `vehicle` is optional: with one, the
+  player is seated in it and the companion warps into the passenger seat;
+  without one, the companion deploys on foot (spawn + guard). Takes the same
+  optional `weapons` loadout. Always ends with a sense report to verify.
+
+## Tools
+
+**Full admin surface** — one tool per `fivem-admin` verb:
+
+| Area | Tools |
+|---|---|
+| Perception | `ducktown_sense`, `ducktown_status`, `ducktown_players` |
+| Moderation | `ducktown_kick`, `ducktown_ban`, `ducktown_unban`, `ducktown_bans` |
+| Player care | `ducktown_heal`, `ducktown_revive`, `ducktown_teleport`, `ducktown_say` |
+| World & vehicles | `ducktown_spawn_vehicle`, `ducktown_livery` |
+| Items & money | `ducktown_give_item`, `ducktown_give_money`, `ducktown_give_weapon` |
+| Companion | `ducktown_companion` (spawn / despawn / follow / guard / ride / come / say / emote) |
+| Server admin | `ducktown_exec` (raw console command — literal full control), `ducktown_restart`, `ducktown_logs` |
+
+**Composites** — `ducktown_arm_player`, `ducktown_companion_deploy`,
+`ducktown_kit` (above).
 
 **Arming players — use the inventory route.** `ducktown_give_weapon` hands a
 weapon to a client directly, bypassing the framework inventory — and an

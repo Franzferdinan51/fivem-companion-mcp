@@ -53,15 +53,18 @@ def sense_companion(player):
         return raw
 
 
-def arm_player(player):
-    """Composite: carbine + pistol, the standard player loadout — via the
-    framework INVENTORY route (give verb -> bs_inventory GiveItem, items
-    `carbine` and `pistol`). NOT giveweapon: the inventory sync strips any
-    weapon a player holds that is not in their inventory, so client-given
-    weapons vanish from players within moments."""
-    carbine = run_admin("give", player, "carbine", 1)
-    pistol = run_admin("give", player, "pistol", 1)
-    return f"carbine: {carbine}\npistol: {pistol}"
+DEFAULT_WEAPONS = ["carbine", "pistol"]
+
+
+def arm_player(player, weapons=None):
+    """Composite: arm a player with the given inventory weapon items
+    (default: carbine + pistol) — via the framework INVENTORY route (give
+    verb -> bs_inventory GiveItem, one call per item). NOT giveweapon: the
+    inventory sync strips any weapon a player holds that is not in their
+    inventory, so client-given weapons vanish from players within
+    moments."""
+    items = weapons or DEFAULT_WEAPONS
+    return "\n".join(f"{item}: {run_admin('give', player, item, 1)}" for item in items)
 
 
 def companion_deploy(player):
@@ -77,20 +80,35 @@ def companion_deploy(player):
     return f"spawn: {spawn}\nguard: {guard}\ncompanion: {comp}"
 
 
-def kit(player, vehicle):
-    """Composite: the full respawn kit in one call — vehicle, companion in the
-    passenger seat (ride warps her in; she cannot be stranded at the curb),
-    player armed, and a final sense report to verify all of it."""
+def kit(player, vehicle=None, weapons=None):
+    """Composite: the respawn kit in one call, parameterized — nothing is
+    hard-stuck to one car, one gun, or one shape. With a vehicle: spawn it
+    and seat the player, spawn the companion and warp her into the passenger
+    seat (ride — she cannot be stranded at the curb), arm the player, final
+    sense report to verify all of it. Without a vehicle: the companion
+    deploys on foot (spawn + guard) and the player is armed, then the same
+    sense verification."""
+    if not vehicle:
+        steps = [("companion deploy", companion_deploy(player))]
+        steps.append(("arm player", arm_player(player, weapons)))
+        steps.append(("sense", run_admin("sense", player)))
+        return "\n".join(f"{k}: {v}" for k, v in steps)
     steps = [("spawnveh", run_admin("spawnveh", player, vehicle, -1))]
     steps.append(("companion spawn", run_admin("companion", player, "spawn")))
     time.sleep(2)
     steps.append(("companion ride", run_admin("companion", player, "ride")))
-    steps.append(("arm player", arm_player(player)))
+    steps.append(("arm player", arm_player(player, weapons)))
     steps.append(("sense", run_admin("sense", player)))
     return "\n".join(f"{k}: {v}" for k, v in steps)
 
 
 P = {"type": "string", "description": "Player name (or part of it) or server id"}
+
+W = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "Inventory weapon item ids to give (default: carbine + pistol). Known ids on the reference (BS19) install: carbine, pistol, assault_rifle, smg, pump_shotgun, revolver, combat_pistol, sawn_off, marksman, hunting_rifle",
+}
 TOOLS = [
     {
         "name": "ducktown_status",
@@ -103,6 +121,38 @@ TOOLS = [
         "description": "List players currently in DuckTown (id, name, ping).",
         "inputSchema": {"type": "object", "properties": {}},
         "run": lambda a: run_admin("players"),
+    },
+    {
+        "name": "ducktown_kick",
+        "description": "Kick a player by server id (see ducktown_players). Optional reason shown to the player.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player_id": {"type": "integer", "description": "Server id of the player (from ducktown_players)"}, "reason": {"type": "string"}},
+            "required": ["player_id"],
+        },
+        "run": lambda a: run_admin("kick", a["player_id"], a.get("reason", "")),
+    },
+    {
+        "name": "ducktown_ban",
+        "description": "Ban a player by server id (see ducktown_players). Bans persist in the admin resource and are enforced on connect. Optional reason.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player_id": {"type": "integer", "description": "Server id of the player (from ducktown_players)"}, "reason": {"type": "string"}},
+            "required": ["player_id"],
+        },
+        "run": lambda a: run_admin("ban", a["player_id"], a.get("reason", "")),
+    },
+    {
+        "name": "ducktown_unban",
+        "description": "Lift a ban: match by player name or identifier (see ducktown_bans for the ban list).",
+        "inputSchema": {"type": "object", "properties": {"match": {"type": "string", "description": "Player name or identifier to unban"}}, "required": ["match"]},
+        "run": lambda a: run_admin("unban", a["match"]),
+    },
+    {
+        "name": "ducktown_bans",
+        "description": "List active bans.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "run": lambda a: run_admin("bans"),
     },
     {
         "name": "ducktown_sense",
@@ -139,6 +189,16 @@ TOOLS = [
             "required": ["player", "model"],
         },
         "run": lambda a: run_admin("spawnveh", a["player"], a["model"], a.get("livery", -1)),
+    },
+    {
+        "name": "ducktown_livery",
+        "description": "Set the livery index on the vehicle a player is currently sitting in (e.g. scramjet livery 9 = Princess Robot Bubblegum).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player": P, "livery": {"type": "integer", "description": "Livery index"}},
+            "required": ["player", "livery"],
+        },
+        "run": lambda a: run_admin("livery", a["player"], a["livery"]),
     },
     {
         "name": "ducktown_heal",
@@ -189,10 +249,28 @@ TOOLS = [
         "run": lambda a: run_admin("giveweapon", a["player"], a["weapon"], a.get("ammo", 250)),
     },
     {
+        "name": "ducktown_exec",
+        "description": "Run a RAW FXServer server console command (e.g. 'restart <resource>', 'ensure <resource>', 'quit'). This is literal full control of the game server — use deliberately; every call is printed to the server console for audit.",
+        "inputSchema": {"type": "object", "properties": {"command": {"type": "string", "description": "Console command line"}}, "required": ["command"]},
+        "run": lambda a: run_admin("exec", a["command"]),
+    },
+    {
+        "name": "ducktown_restart",
+        "description": "Restart the game server process: kills the FXServer child and the monitor (txAdmin) respawns it within seconds with the current server.cfg and resource files. Connected players must reconnect. This is how new resource code gets loaded.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "run": lambda a: run_admin("restart"),
+    },
+    {
+        "name": "ducktown_logs",
+        "description": "Read recent server log lines (the fivem service journal). Optional line count, default 50.",
+        "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer"}}},
+        "run": lambda a: run_admin("logs", a.get("lines", 50)),
+    },
+    {
         "name": "ducktown_arm_player",
-        "description": "Arm a player the durable way: framework inventory weapon items `carbine` + `pistol` via the inventory (these survive the inventory sync, unlike client-given weapons). One call, both weapons.",
-        "inputSchema": {"type": "object", "properties": {"player": P}, "required": ["player"]},
-        "run": lambda a: arm_player(a["player"]),
+        "description": "Arm a player the durable way: framework inventory weapon items via the inventory (these survive the inventory sync, unlike client-given weapons). Optional `weapons` picks the loadout — an array of inventory weapon item ids (known on the reference BS19 install: carbine, pistol, assault_rifle, smg, pump_shotgun, revolver, combat_pistol, sawn_off, marksman, hunting_rifle); defaults to carbine + pistol.",
+        "inputSchema": {"type": "object", "properties": {"player": P, "weapons": W}, "required": ["player"]},
+        "run": lambda a: arm_player(a["player"], a.get("weapons")),
     },
     {
         "name": "ducktown_companion_deploy",
@@ -202,13 +280,13 @@ TOOLS = [
     },
     {
         "name": "ducktown_kit",
-        "description": "The full respawn kit in one call: spawn a vehicle and seat the player, spawn the companion and warp her into the passenger seat (ride), arm the player (inventory carbine + pistol), then a final sense report — verify player.inVehicle, companion.inVehicle and companion.mode from it.",
+        "description": "The respawn kit in one call, parameterized — pick the car, the guns, or neither. With a vehicle: spawn it and seat the player, spawn the companion and warp her into the passenger seat (ride), arm the player, then a final sense report — verify player.inVehicle, companion.inVehicle and companion.mode from it. Without a vehicle: the companion deploys on foot (spawn + guard) and the player is armed, then the same sense verification. `weapons` picks the loadout (inventory weapon item ids; default carbine + pistol).",
         "inputSchema": {
             "type": "object",
-            "properties": {"player": P, "vehicle": {"type": "string", "description": "Vehicle model name, e.g. krieger"}},
-            "required": ["player", "vehicle"],
+            "properties": {"player": P, "vehicle": {"type": "string", "description": "Vehicle model name, e.g. krieger (optional — omit for an on-foot kit)"}, "weapons": W},
+            "required": ["player"],
         },
-        "run": lambda a: kit(a["player"], a["vehicle"]),
+        "run": lambda a: kit(a["player"], a.get("vehicle"), a.get("weapons")),
     },
 ]
 TOOL_MAP = {t["name"]: t for t in TOOLS}
