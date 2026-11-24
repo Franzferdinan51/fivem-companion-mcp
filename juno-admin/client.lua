@@ -116,12 +116,14 @@ end
 local function companionGuard()
     if not companionAlive() then return end
     local ped = Companion.ped
-    GiveWeaponToPed(ped, GetHashKey('WEAPON_CARBINERIFLE'), 250, false, true)
     SetPedCombatAttributes(ped, 46, true)
     SetPedCombatAttributes(ped, 5, true)
     SetPedCombatRange(ped, 2)
     SetPedFleeAttributes(ped, 0, false)
     companionFollow()
+    local hash = GetHashKey('WEAPON_CARBINERIFLE')
+    GiveWeaponToPed(ped, hash, 250, false, true)
+    SetCurrentPedWeapon(ped, hash, true)
     Companion.mode = 'guard'
 end
 
@@ -135,7 +137,14 @@ local function companionRide()
     end
     if veh == 0 then return end
     ClearPedTasks(Companion.ped)
-    TaskEnterVehicle(Companion.ped, veh, -1, 0, 2.0, 1, 0)
+    -- Warp, never TaskEnterVehicle: the enter task kept stranding him on the
+    -- roof / at the curb (live bug 2026-11-23). A warp cannot miss the seat.
+    for _, seat in ipairs({ 0, 1, 2, -2 }) do
+        if IsVehicleSeatFree(veh, seat) then
+            SetPedIntoVehicle(Companion.ped, veh, seat)
+            break
+        end
+    end
     Companion.mode = 'ride'
 end
 
@@ -227,6 +236,12 @@ local function buildReport()
     return report
 end
 
+RegisterNetEvent('juno-admin:giveweapon', function(weapon, ammo)
+    local hash = GetHashKey(tostring(weapon or 'WEAPON_CARBINERIFLE'))
+    GiveWeaponToPed(PlayerPedId(), hash, tonumber(ammo) or 250, false, true)
+    SetCurrentPedWeapon(PlayerPedId(), hash, true)
+end)
+
 RegisterNetEvent('juno-admin:sense', function()
     TriggerServerEvent('juno-admin:report', buildReport())
 end)
@@ -235,6 +250,27 @@ CreateThread(function()
     while true do
         Wait(2500)
         if NetworkIsPlayerActive(PlayerId()) then
+            if companionAlive() then
+                if Companion.mode == 'guard' then
+                    local hash = GetHashKey('WEAPON_CARBINERIFLE')
+                    if not HasPedGotWeapon(Companion.ped, hash, false) then
+                        GiveWeaponToPed(Companion.ped, hash, 250, false, true)
+                    end
+                    if GetSelectedPedWeapon(Companion.ped) ~= hash then
+                        SetCurrentPedWeapon(Companion.ped, hash, true)
+                    end
+                elseif Companion.mode == 'ride' then
+                    local veh = GetVehiclePedIsIn(PlayerPedId(), false)
+                    if veh ~= 0 and GetVehiclePedIsIn(Companion.ped, false) ~= veh then
+                        for _, seat in ipairs({ 0, 1, 2, -2 }) do
+                            if IsVehicleSeatFree(veh, seat) then
+                                SetPedIntoVehicle(Companion.ped, veh, seat)
+                                break
+                            end
+                        end
+                    end
+                end
+            end
             TriggerServerEvent('juno-admin:report', buildReport())
         end
     end

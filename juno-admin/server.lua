@@ -220,6 +220,13 @@ local function doGiveItem(src, item, count)
     return given == true, given == true and 'gave ' .. item or 'give failed (unknown item or no space)'
 end
 
+local function doGiveWeapon(src, data)
+    local weapon = tostring(data.weapon or '')
+    if weapon == '' then return false, 'no weapon given' end
+    TriggerClientEvent('juno-admin:giveweapon', src, weapon, tonumber(data.ammo) or 250)
+    return true, 'gave weapon ' .. weapon
+end
+
 local COMPANION_ACTIONS = {
     spawn = true, despawn = true, follow = true, guard = true,
     ride = true, come = true, say = true, emote = true,
@@ -320,7 +327,8 @@ SetHttpHandler(function(req, res)
             TriggerClientEvent('juno-admin:livery', src, tonumber(data.livery) or -1)
             return reply(res, 200, { ok = true, result = 'livery applied: ' .. tostring(data.livery) })
         elseif path == '/spawnveh' or path == '/heal' or path == '/revive' or path == '/tp'
-            or path == '/giveitem' or path == '/givemoney' or path == '/companion' then
+            or path == '/giveitem' or path == '/givemoney' or path == '/companion'
+            or path == '/giveweapon' then
             local src = resolvePlayer(data)
             if not src then return reply(res, 404, { ok = false, result = 'no such player' }) end
             local okk, msg
@@ -329,6 +337,7 @@ SetHttpHandler(function(req, res)
             elseif path == '/revive' then okk, msg = doRevive(src)
             elseif path == '/tp' then okk, msg = doTp(src, data)
             elseif path == '/giveitem' then okk, msg = doGiveItem(src, data.item, data.count)
+            elseif path == '/giveweapon' then okk, msg = doGiveWeapon(src, data)
             elseif path == '/givemoney' then okk, msg = doGiveMoney(src, data.account, data.amount)
             elseif path == '/companion' then okk, msg = doCompanion(src, data) end
             print(('[juno-admin] %s -> %s (%s): %s'):format(path, GetPlayerName(src) or '?', src, tostring(msg)))

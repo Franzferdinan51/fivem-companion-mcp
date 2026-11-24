@@ -35,14 +35,36 @@ Three pieces:
 - **`cli/fivem-admin`** — a bash CLI on the server host that wraps the API
   (it reads the token locally; the token never leaves the host).
 - **`mcp/ducktown-mcp`** — a dependency-free Python MCP server (stdio) that
-  exposes 11 tools: `ducktown_sense`, `ducktown_companion`, `ducktown_players`,
+  exposes 15 tools: `ducktown_sense`, `ducktown_companion`, `ducktown_players`,
   `ducktown_status`, `ducktown_say`, `ducktown_spawn_vehicle`, `ducktown_heal`,
   `ducktown_revive`, `ducktown_teleport`, `ducktown_give_item`,
-  `ducktown_give_money`.
+  `ducktown_give_money`, `ducktown_give_weapon`, `ducktown_arm_player`,
+  `ducktown_companion_deploy`, `ducktown_kit`.
 
 The agent loop is the classic one: **sense → decide → act.** `ducktown_sense`
 is the agent's eyes; `ducktown_companion` is its body — spawn beside a player,
 follow them, guard them (armed), ride in their vehicle, talk in chat, emote.
+
+Three of the tools are **harness composites** — one call that runs a whole
+choreographed sequence and reads the result back:
+
+- `ducktown_arm_player` — carbine + pistol for a player, via the inventory.
+- `ducktown_companion_deploy` — companion spawn → guard → sense readback.
+- `ducktown_kit` — the full respawn kit: vehicle, companion warped into the
+  passenger seat, player armed, final sense report to verify it all.
+
+**Arming players — use the inventory route.** `ducktown_give_weapon` hands a
+weapon to a client directly, bypassing the framework inventory — and an
+inventory framework (BS19 included) strips it from the player within moments,
+because its sync wipes any weapon that isn't in the inventory. The durable
+route is the framework's own weapon *items* (`carbine`, `pistol`, …) given
+through the inventory, which is what `ducktown_arm_player` and `ducktown_kit`
+do. The direct route still has its place: the companion has no inventory, so
+her guard carbine is given client-side (and a watchdog in `client.lua` keeps
+it in her hand). Two companion fixes ride along in this release: ride now
+*warps* her into a free seat instead of tasking her to walk in (the walk-in
+task kept stranding her on the roof), and a watchdog re-seats her if she's
+ever left behind while her player drives.
 
 ## Honest limits
 

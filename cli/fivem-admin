@@ -36,6 +36,7 @@ case "$cmd" in
   revive)  api revive "\"name\":\"$(json_escape "${2:?player name or id}")\"" | pretty ;;
   tp)      api tp     "\"name\":\"$(json_escape "${2:?player name or id}")\",\"to\":\"$(json_escape "${3:?target player}")\"" | pretty ;;
   give)    api giveitem "\"name\":\"$(json_escape "${2:?player name or id}")\",\"item\":\"$(json_escape "${3:?item}")\",\"count\":${4:-1}" | pretty ;;
+  giveweapon) api giveweapon "\"name\":\"$(json_escape "${2:?player name or id}")\",\"weapon\":\"$(json_escape "${3:?WEAPON_NAME}")\",\"ammo\":${4:-250}" | pretty ;;
   givemoney) api givemoney "\"name\":\"$(json_escape "${2:?player name or id}")\",\"account\":\"${3:-cash}\",\"amount\":${4:?amount}" | pretty ;;
   companion)
     action="${3:?action: spawn|despawn|follow|guard|ride|come|say|emote}"

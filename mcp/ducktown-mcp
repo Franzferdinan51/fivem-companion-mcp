@@ -19,6 +19,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 SSH_PREFIX = shlex.split(os.environ["DUCKTOWN_SSH"]) if os.environ.get("DUCKTOWN_SSH") else ["sh", "-c"]
 REMOTE = "~/bin/fivem-admin"
@@ -36,6 +37,57 @@ def run_admin(*args):
 
 def tool_result(text, is_error=False):
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
+
+
+def sense_companion(player):
+    """Run sense and return just the companion block (mode/distance/inVehicle)."""
+    raw = run_admin("sense", player)
+    try:
+        data = json.loads(raw)
+        sense = data.get("sense") or data
+        comp = sense.get("companion")
+        if comp is None:
+            return "(companion not present in sense report)"
+        return json.dumps(comp, indent=2)
+    except Exception:  # noqa: BLE001 - fall back to the raw report
+        return raw
+
+
+def arm_player(player):
+    """Composite: carbine + pistol, the standard player loadout — via the
+    framework INVENTORY route (give verb -> bs_inventory GiveItem, items
+    `carbine` and `pistol`). NOT giveweapon: the inventory sync strips any
+    weapon a player holds that is not in their inventory, so client-given
+    weapons vanish from players within moments."""
+    carbine = run_admin("give", player, "carbine", 1)
+    pistol = run_admin("give", player, "pistol", 1)
+    return f"carbine: {carbine}\npistol: {pistol}"
+
+
+def companion_deploy(player):
+    """Composite: spawn the companion beside the player, put her on guard
+    (armed, carbine in hand), then read back her sense state. The short waits
+    matter: the ped spawns asynchronously on the player's client, so a guard
+    order sent too early lands before she exists and is dropped."""
+    spawn = run_admin("companion", player, "spawn")
+    time.sleep(2)
+    guard = run_admin("companion", player, "guard")
+    time.sleep(1)
+    comp = sense_companion(player)
+    return f"spawn: {spawn}\nguard: {guard}\ncompanion: {comp}"
+
+
+def kit(player, vehicle):
+    """Composite: the full respawn kit in one call — vehicle, companion in the
+    passenger seat (ride warps her in; she cannot be stranded at the curb),
+    player armed, and a final sense report to verify all of it."""
+    steps = [("spawnveh", run_admin("spawnveh", player, vehicle, -1))]
+    steps.append(("companion spawn", run_admin("companion", player, "spawn")))
+    time.sleep(2)
+    steps.append(("companion ride", run_admin("companion", player, "ride")))
+    steps.append(("arm player", arm_player(player)))
+    steps.append(("sense", run_admin("sense", player)))
+    return "\n".join(f"{k}: {v}" for k, v in steps)
 
 
 P = {"type": "string", "description": "Player name (or part of it) or server id"}
@@ -125,6 +177,38 @@ TOOLS = [
             "required": ["player", "amount"],
         },
         "run": lambda a: run_admin("givemoney", a["player"], a.get("account", "cash"), a["amount"]),
+    },
+    {
+        "name": "ducktown_give_weapon",
+        "description": "Give a weapon directly by GTA weapon name (e.g. WEAPON_CARBINERIFLE), client-side, bypassing the framework inventory. WARNING: with an inventory framework like BS19, weapons given this way to a PLAYER are stripped by the inventory sync within moments — arm players with ducktown_arm_player instead. This route is for the companion / testing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player": P, "weapon": {"type": "string", "description": "GTA weapon name, e.g. WEAPON_CARBINERIFLE"}, "ammo": {"type": "integer"}},
+            "required": ["player", "weapon"],
+        },
+        "run": lambda a: run_admin("giveweapon", a["player"], a["weapon"], a.get("ammo", 250)),
+    },
+    {
+        "name": "ducktown_arm_player",
+        "description": "Arm a player the durable way: framework inventory weapon items `carbine` + `pistol` via the inventory (these survive the inventory sync, unlike client-given weapons). One call, both weapons.",
+        "inputSchema": {"type": "object", "properties": {"player": P}, "required": ["player"]},
+        "run": lambda a: arm_player(a["player"]),
+    },
+    {
+        "name": "ducktown_companion_deploy",
+        "description": "Deploy the companion beside a player in one call: spawn, then guard (armed, carbine in hand, follows and fights), then a sense readback of the companion's state (mode / distance / inVehicle).",
+        "inputSchema": {"type": "object", "properties": {"player": P}, "required": ["player"]},
+        "run": lambda a: companion_deploy(a["player"]),
+    },
+    {
+        "name": "ducktown_kit",
+        "description": "The full respawn kit in one call: spawn a vehicle and seat the player, spawn the companion and warp her into the passenger seat (ride), arm the player (inventory carbine + pistol), then a final sense report — verify player.inVehicle, companion.inVehicle and companion.mode from it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player": P, "vehicle": {"type": "string", "description": "Vehicle model name, e.g. krieger"}},
+            "required": ["player", "vehicle"],
+        },
+        "run": lambda a: kit(a["player"], a["vehicle"]),
     },
 ]
 TOOL_MAP = {t["name"]: t for t in TOOLS}
