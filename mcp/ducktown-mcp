@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""DuckTown MCP server — an AI agent's hands and eyes inside a FiveM server.
+
+A stdio MCP server. Every tool shells out (over SSH, or locally) to the
+`fivem-admin` CLI on the server host, which talks to the token-gated
+juno-admin API inside the FiveM server.
+
+Access control: this is built for the server owner's own agents only. There
+is NO network listener — stdio only. The game-side API token never leaves the
+server host (fivem-admin reads it locally there), and reaching the host at
+all requires the owner's SSH key. In-game players have no path to any of this.
+
+Transport: env DUCKTOWN_SSH sets the command prefix used to reach the host.
+  - Agent on another machine:  DUCKTOWN_SSH="ssh -i ~/.ssh/id_ed25519 user@your-server-host"
+  - Agent on the server host itself: leave it unset (tools run locally).
+"""
+import json
+import os
+import shlex
+import subprocess
+import sys
+
+SSH_PREFIX = shlex.split(os.environ["DUCKTOWN_SSH"]) if os.environ.get("DUCKTOWN_SSH") else ["sh", "-c"]
+REMOTE = "~/bin/fivem-admin"
+
+
+def run_admin(*args):
+    remote_cmd = REMOTE + " " + " ".join(shlex.quote(str(a)) for a in args)
+    proc = subprocess.run(SSH_PREFIX + [remote_cmd], capture_output=True, text=True, timeout=30)
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return (out + "\n" + err).strip() or f"fivem-admin exited {proc.returncode}"
+    return out or "(no output)"
+
+
+def tool_result(text, is_error=False):
+    return {"content": [{"type": "text", "text": text}], "isError": is_error}
+
+
+P = {"type": "string", "description": "Player name (or part of it) or server id"}
+TOOLS = [
+    {
+        "name": "ducktown_status",
+        "description": "DuckTown server status: service state, ports, player count line from dynamic.json.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "run": lambda a: run_admin("status"),
+    },
+    {
+        "name": "ducktown_players",
+        "description": "List players currently in DuckTown (id, name, ping).",
+        "inputSchema": {"type": "object", "properties": {}},
+        "run": lambda a: run_admin("players"),
+    },
+    {
+        "name": "ducktown_sense",
+        "description": "Perceive the world around a player: their position/health/vehicle/speed, the Juno companion's state if she is out (position, mode, health, distance), and nearby ped/vehicle counts (nearby peds in DuckTown are mostly zombies). This is how Juno sees the game.",
+        "inputSchema": {"type": "object", "properties": {"player": P}, "required": ["player"]},
+        "run": lambda a: run_admin("sense", a["player"]),
+    },
+    {
+        "name": "ducktown_companion",
+        "description": "Control Juno's in-game companion body, anchored to a player. Actions: spawn (appear beside them), despawn, follow, guard (armed, follows and fights), ride (get in their vehicle as passenger), come (teleport to them), say (speak — needs text), emote (needs text: sit, lean, smoke, guard, cheer, clipboard, drink, coffee, phone, music, or stop).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "player": P,
+                "action": {"type": "string", "enum": ["spawn", "despawn", "follow", "guard", "ride", "come", "say", "emote"]},
+                "text": {"type": "string", "description": "Speech text for say, emote name for emote"},
+            },
+            "required": ["player", "action"],
+        },
+        "run": lambda a: run_admin("companion", a["player"], a["action"], a.get("text", "")),
+    },
+    {
+        "name": "ducktown_say",
+        "description": "Send a server-wide chat announcement.",
+        "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
+        "run": lambda a: run_admin("say", a["message"]),
+    },
+    {
+        "name": "ducktown_spawn_vehicle",
+        "description": "Spawn a vehicle next to a player and put them in the driver's seat. Optional livery index (e.g. scramjet livery 9 = Princess Robot Bubblegum).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player": P, "model": {"type": "string"}, "livery": {"type": "integer"}},
+            "required": ["player", "model"],
+        },
+        "run": lambda a: run_admin("spawnveh", a["player"], a["model"], a.get("livery", -1)),
+    },
+    {
+        "name": "ducktown_heal",
+        "description": "Fully heal a player.",
+        "inputSchema": {"type": "object", "properties": {"player": P}, "required": ["player"]},
+        "run": lambda a: run_admin("heal", a["player"]),
+    },
+    {
+        "name": "ducktown_revive",
+        "description": "Revive a downed player (BS19 medical).",
+        "inputSchema": {"type": "object", "properties": {"player": P}, "required": ["player"]},
+        "run": lambda a: run_admin("revive", a["player"]),
+    },
+    {
+        "name": "ducktown_teleport",
+        "description": "Teleport a player to another player.",
+        "inputSchema": {"type": "object", "properties": {"player": P, "to": P}, "required": ["player", "to"]},
+        "run": lambda a: run_admin("tp", a["player"], a["to"]),
+    },
+    {
+        "name": "ducktown_give_item",
+        "description": "Give a BS19 inventory item to a player.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player": P, "item": {"type": "string"}, "count": {"type": "integer"}},
+            "required": ["player", "item"],
+        },
+        "run": lambda a: run_admin("give", a["player"], a["item"], a.get("count", 1)),
+    },
+    {
+        "name": "ducktown_give_money",
+        "description": "Give a player money (account: cash or bank).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"player": P, "account": {"type": "string", "enum": ["cash", "bank"]}, "amount": {"type": "integer"}},
+            "required": ["player", "amount"],
+        },
+        "run": lambda a: run_admin("givemoney", a["player"], a.get("account", "cash"), a["amount"]),
+    },
+]
+TOOL_MAP = {t["name"]: t for t in TOOLS}
+
+
+def handle(msg):
+    method = msg.get("method", "")
+    mid = msg.get("id")
+    if method == "initialize":
+        return {"jsonrpc": "2.0", "id": mid, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "ducktown", "version": "1.0.0"},
+        }}
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": mid, "result": {}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": mid, "result": {
+            "tools": [{k: t[k] for k in ("name", "description", "inputSchema")} for t in TOOLS]}}
+    if method == "tools/call":
+        params = msg.get("params", {})
+        tool = TOOL_MAP.get(params.get("name", ""))
+        if not tool:
+            return {"jsonrpc": "2.0", "id": mid, "result": tool_result("unknown tool", True)}
+        try:
+            text = tool["run"](params.get("arguments", {}) or {})
+            return {"jsonrpc": "2.0", "id": mid, "result": tool_result(text)}
+        except Exception as e:  # noqa: BLE001 - report, never crash the server
+            return {"jsonrpc": "2.0", "id": mid, "result": tool_result(f"error: {e}", True)}
+    if mid is not None:
+        return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}}
+    return None  # notification
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        resp = handle(msg)
+        if resp is not None:
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,4 @@
+token.txt
+bans.json
+__pycache__/
+*.pyc

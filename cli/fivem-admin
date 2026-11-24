@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# fivem-admin — Juno's helper CLI for the FiveM server host.
+# Moderation verbs talk to the juno-admin resource's token-gated HTTP API on the game port.
+set -euo pipefail
+
+RES_DIR="$HOME/fivem/server-data/resources/[local]/juno-admin"
+TOKEN="$(cat "$RES_DIR/token.txt" 2>/dev/null || true)"
+API="http://127.0.0.1:30120/juno-admin"
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+api() { # api <route> <json-fields-without-token>
+  curl -s --max-time 8 -X POST "$API/$1" -H 'Content-Type: application/json' \
+    -d "{\"token\":\"$TOKEN\",$2}"
+}
+
+pretty() { python3 -m json.tool 2>/dev/null || cat; }
+
+child_pid() { ss -tlnp 2>/dev/null | grep ':30120 ' | grep -oP 'pid=\K[0-9]+' | head -1; }
+
+cmd="${1:-status}"
+case "$cmd" in
+  status)
+    echo "service: $(systemctl --user is-active fivem.service)"
+    ss -tlnp 2>/dev/null | grep -E ':30120|:40120' || true
+    curl -s --max-time 5 http://127.0.0.1:30120/dynamic.json | pretty
+    ;;
+  players) api players '' | pretty ;;
+  kick)    api kick  "\"id\":${2:?player id},\"reason\":\"$(json_escape "${3:-Kicked by an admin.}")\"" | pretty ;;
+  ban)     api ban   "\"id\":${2:?player id},\"reason\":\"$(json_escape "${3:-Banned by an admin.}")\"" | pretty ;;
+  unban)   api unban "\"match\":\"$(json_escape "${2:?name or identifier}")\"" | pretty ;;
+  bans)    api bans '' | pretty ;;
+  say)     api say   "\"message\":\"$(json_escape "${2:?message}")\"" | pretty ;;
+  spawnveh) api spawnveh "\"name\":\"$(json_escape "${2:?player name or id}")\",\"model\":\"$(json_escape "${3:?vehicle model}")\",\"livery\":${4:--1}" | pretty ;;
+  heal)    api heal   "\"name\":\"$(json_escape "${2:?player name or id}")\"" | pretty ;;
+  revive)  api revive "\"name\":\"$(json_escape "${2:?player name or id}")\"" | pretty ;;
+  tp)      api tp     "\"name\":\"$(json_escape "${2:?player name or id}")\",\"to\":\"$(json_escape "${3:?target player}")\"" | pretty ;;
+  give)    api giveitem "\"name\":\"$(json_escape "${2:?player name or id}")\",\"item\":\"$(json_escape "${3:?item}")\",\"count\":${4:-1}" | pretty ;;
+  givemoney) api givemoney "\"name\":\"$(json_escape "${2:?player name or id}")\",\"account\":\"${3:-cash}\",\"amount\":${4:?amount}" | pretty ;;
+  companion)
+    action="${3:?action: spawn|despawn|follow|guard|ride|come|say|emote}"
+    rest="${@:4}"
+    api companion "\"name\":\"$(json_escape "${2:?player name or id}")\",\"action\":\"$action\",\"text\":\"$(json_escape "$rest")\",\"emote\":\"$(json_escape "$rest")\"" | pretty ;;
+  sense)   api sense "\"name\":\"$(json_escape "${2:?player name or id}")\"" | pretty ;;
+  exec)    api exec "\"command\":\"$(json_escape "${2:?console command}")\"" | pretty ;;
+  livery)  api livery "\"name\":\"$(json_escape "${2:?player name or id}")\",\"livery\":${3:?livery index}" | pretty ;;
+  restart)
+    pid="$(child_pid)"
+    if [ -n "$pid" ]; then kill "$pid"; echo "killed FXServer child $pid — txAdmin will respawn it"; else echo "no FXServer child listening on 30120"; fi
+    ;;
+  logs) journalctl --user -u fivem.service -n "${2:-50}" --no-pager ;;
+  *) echo "usage: fivem-admin status|players|kick <id> [reason]|ban <id> [reason]|unban <match>|bans|say <msg>|spawnveh <player> <model>|heal <player>|revive <player>|tp <player> <target>|give <player> <item> [n]|givemoney <player> [cash|bank] <amount>|companion <player> <action> [text]|sense <player>|exec <console command>|restart|logs [n]" >&2; exit 2 ;;
+esac
